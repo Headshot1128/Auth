@@ -1,4 +1,5 @@
 #ifdef NOVYX_DLL_CLIENT
+
 #include "novyx/bootstrap.hpp"
 namespace secureauth = novyx;
 #else
