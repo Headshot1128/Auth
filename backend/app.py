@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -153,6 +154,18 @@ def create_app(settings=None):
     settings = settings or Settings.environment()
     prepare(settings)
     migrate(settings)
+    owner_pw = os.getenv('AUTH_OWNER_PASSWORD')
+    if owner_pw:
+        with connect(settings) as db:
+            user = db.execute('SELECT id FROM users WHERE username=?', (settings.owner_username,)).fetchone()
+            if not user:
+                identifier = uid()
+                db.execute("INSERT INTO users(id,username,password_hash,role,console_only,created_at) VALUES(?,?,?,'admin',1,?)",
+                           (identifier, settings.owner_username, passwords.hash(owner_pw), now()))
+                audit(db, 'bootstrap.create-admin', 'allowed', target=identifier)
+            else:
+                db.execute('UPDATE users SET password_hash=?,password_until=NULL WHERE id=?',
+                           (passwords.hash(owner_pw), user['id']))
     app = FastAPI(title='Secure Authorization', version='1.0.0', docs_url=None, redoc_url=None)
     app.state.settings = settings
 
