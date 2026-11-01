@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -15,13 +16,14 @@ from .license_keys import cipher, generate
 
 
 class Input(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='ignore')
 
 
 class Credentials(Input):
     username: str = Field(pattern=r'^[A-Za-z0-9_.-]{3,64}$')
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
     hardware_id: str | None = Field(default=None, min_length=16, max_length=256)
+    remember: bool | None = None
 
 
 class ApplicationCredentials(Credentials):
@@ -153,6 +155,18 @@ def create_app(settings=None):
     settings = settings or Settings.environment()
     prepare(settings)
     migrate(settings)
+    owner_pw = os.getenv('AUTH_OWNER_PASSWORD')
+    if owner_pw:
+        with connect(settings) as db:
+            user = db.execute('SELECT id FROM users WHERE username=?', (settings.owner_username,)).fetchone()
+            if not user:
+                identifier = uid()
+                db.execute("INSERT INTO users(id,username,password_hash,role,console_only,web_approved,created_at) VALUES(?,?,?,'admin',1,1,?)",
+                           (identifier, settings.owner_username, passwords.hash(owner_pw), now()))
+                audit(db, 'bootstrap.create-admin', 'allowed', target=identifier)
+            else:
+                db.execute('UPDATE users SET password_hash=?,password_until=NULL,web_approved=1,status="active" WHERE id=?',
+                           (passwords.hash(owner_pw), user['id']))
     app = FastAPI(title='Secure Authorization', version='1.0.0', docs_url=None, redoc_url=None)
     app.state.settings = settings
 
@@ -171,7 +185,8 @@ def create_app(settings=None):
 
     @app.middleware('http')
     async def boundary(request, call_next):
-        if settings.require_https and request.url.scheme != 'https':
+        is_https = request.url.scheme == 'https' or request.headers.get('x-forwarded-proto') == 'https'
+        if settings.require_https and not is_https:
             return JSONResponse({'success': False, 'error': 'https_required'}, status_code=400)
         # Buffer bounded JSON requests before parsing, including chunked bodies.
         size = 0
