@@ -16,13 +16,14 @@ from .license_keys import cipher, generate
 
 
 class Input(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='ignore')
 
 
 class Credentials(Input):
     username: str = Field(pattern=r'^[A-Za-z0-9_.-]{3,64}$')
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
     hardware_id: str | None = Field(default=None, min_length=16, max_length=256)
+    remember: bool | None = None
 
 
 class ApplicationCredentials(Credentials):
@@ -169,11 +170,11 @@ def create_app(settings=None):
             user = db.execute('SELECT id FROM users WHERE username=?', (settings.owner_username,)).fetchone()
             if not user:
                 identifier = uid()
-                db.execute("INSERT INTO users(id,username,password_hash,role,console_only,created_at) VALUES(?,?,?,'admin',1,?)",
+                db.execute("INSERT INTO users(id,username,password_hash,role,console_only,web_approved,created_at) VALUES(?,?,?,'admin',1,1,?)",
                            (identifier, settings.owner_username, passwords.hash(owner_pw), now()))
                 audit(db, 'bootstrap.create-admin', 'allowed', target=identifier)
             else:
-                db.execute('UPDATE users SET password_hash=?,password_until=NULL WHERE id=?',
+                db.execute('UPDATE users SET password_hash=?,password_until=NULL,web_approved=1,status="active" WHERE id=?',
                            (passwords.hash(owner_pw), user['id']))
     app = FastAPI(title='Secure Authorization', version='1.0.0', docs_url=None, redoc_url=None)
     app.state.settings = settings
@@ -244,7 +245,14 @@ def create_app(settings=None):
                        (sid, user['id'], audience, now() + settings.session_seconds,
                         digest(body.hardware_id) if body.hardware_id else None))
             audit(db, 'login', 'allowed', user['id'])
-            return issue(db, settings, sid)
+            res = issue(db, settings, sid)
+            res['user'] = {
+                'username': user['username'],
+                'user_id': user['id'],
+                'is_owner': user['username'] == settings.owner_username,
+                'role': user['role']
+            }
+            return res
 
     @app.post('/v1/register', status_code=201)
     def register(body: Registration, request: Request):
@@ -472,11 +480,21 @@ def create_app(settings=None):
     def post_bootstrapper(request: Request):
         return {'success': True}
 
+    @app.post('/v1/admin/resume')
+    def admin_resume(request: Request):
+        deny('authentication_required', 401)
+
     @app.get('/v1/admin/session')
     def admin_session(request: Request):
         with connect(settings) as db:
             user = authenticated(db, request, 'admin')
-            return {'success': True, 'username': user['username'], 'user_id': user['id'], 'is_owner': user['username'] == settings.owner_username}
+            return {
+                'success': True,
+                'username': user['username'],
+                'user_id': user['id'],
+                'is_owner': user['username'] == settings.owner_username,
+                'role': user['role']
+            }
 
     @app.get('/v1/admin/overview')
     def overview(request: Request):
