@@ -190,6 +190,8 @@ def create_app(settings=None):
 
     @app.exception_handler(Exception)
     async def unexpected_error(request, exc):
+        import traceback
+        traceback.print_exc()
         return JSONResponse({'success': False, 'error': 'server_error'}, status_code=500)
 
     @app.middleware('http')
@@ -441,6 +443,12 @@ def create_app(settings=None):
     def list_applications(request: Request):
         with connect(settings) as db:
             admin = authenticated(db, request, 'admin')
+            db.execute('''CREATE TABLE IF NOT EXISTS applications (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT DEFAULT 'active' NOT NULL,
+                created_at INTEGER NOT NULL
+            )''')
             db.execute("INSERT OR IGNORE INTO applications(id,name,status,created_at) VALUES('00000000-0000-4000-8000-000000000001','Default application','active',?)", (now(),))
             rows = db.execute('SELECT * FROM applications ORDER BY created_at, id').fetchall()
             return {'success': True, 'applications': [dict(r) for r in rows], 'default_application_id': '00000000-0000-4000-8000-000000000001'}
@@ -469,7 +477,11 @@ def create_app(settings=None):
     def list_resellers(request: Request, offset: int = 0):
         with connect(settings) as db:
             admin = authenticated(db, request, 'admin')
-            rows = db.execute("SELECT u.id,u.username,u.status,u.created_at,r.max_days FROM users u JOIN reseller_profiles r ON r.user_id=u.id WHERE u.role='reseller' ORDER BY u.username LIMIT 100 OFFSET ?", (max(0, offset),)).fetchall()
+            db.execute('''CREATE TABLE IF NOT EXISTS reseller_profiles (
+                user_id TEXT PRIMARY KEY NOT NULL,
+                max_days INTEGER NOT NULL DEFAULT 30
+            )''')
+            rows = db.execute("SELECT u.id,u.username,u.status,u.created_at,COALESCE(r.max_days, 30) AS max_days FROM users u LEFT JOIN reseller_profiles r ON r.user_id=u.id WHERE u.role='reseller' ORDER BY u.username LIMIT 100 OFFSET ?", (max(0, offset),)).fetchall()
             return {'success': True, 'resellers': [dict(r) for r in rows]}
 
     @app.get('/v1/admin/bootstrapper')
