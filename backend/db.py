@@ -29,11 +29,18 @@ def migrate(settings):
     with sqlite3.connect(settings.database) as db:
         db.execute('PRAGMA journal_mode=WAL')
         db.execute('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY)')
-        migrations_dir = Path(__file__).parent / 'migrations'
-        for file in sorted(migrations_dir.glob('*.sql')):
-            prefix = file.name.split('_')[0]
-            if prefix.isdigit():
-                version = int(prefix)
-                if not db.execute('SELECT 1 FROM schema_migrations WHERE version=?', (version,)).fetchone():
-                    sql = file.read_text()
-                    db.executescript('BEGIN IMMEDIATE;\n' + sql + '\nCOMMIT;')
+        if not db.execute('SELECT 1 FROM schema_migrations WHERE version=1').fetchone():
+            sql = (Path(__file__).parent / 'migrations/001_initial.sql').read_text()
+            db.executescript('BEGIN IMMEDIATE;\n' + sql + '\nCOMMIT;')
+        if not db.execute('SELECT 1 FROM schema_migrations WHERE version=2').fetchone():
+            sql = (Path(__file__).parent / 'migrations/002_console_accounts.sql').read_text()
+            db.executescript('BEGIN IMMEDIATE;\n' + sql + '\nCOMMIT;')
+        if not db.execute('SELECT 1 FROM schema_migrations WHERE version=3').fetchone():
+            sql = (Path(__file__).parent / 'migrations/003_visible_license_keys.sql').read_text()
+            db.executescript('BEGIN IMMEDIATE;\n' + sql + '\nCOMMIT;')
+        if not db.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone():
+            sql = (Path(__file__).parent / 'migrations/004_website_approval.sql').read_text()
+            db.executescript('BEGIN IMMEDIATE;\n' + sql + '\nCOMMIT;')
+        if not db.execute('SELECT 1 FROM schema_migrations WHERE version=5').fetchone():
+            sql = (Path(__file__).parent / 'migrations/005_license_freeze.sql').read_text()
+            db.executescript('BEGIN IMMEDIATE;\n' + sql + '\nCOMMIT;')

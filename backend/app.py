@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -16,14 +15,13 @@ from .license_keys import cipher, generate
 
 
 class Input(BaseModel):
-    model_config = ConfigDict(extra='ignore')
+    model_config = ConfigDict(extra='forbid')
 
 
 class Credentials(Input):
     username: str = Field(pattern=r'^[A-Za-z0-9_.-]{3,64}$')
-    password: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=12, max_length=128)
     hardware_id: str | None = Field(default=None, min_length=16, max_length=256)
-    remember: bool | None = None
 
 
 class ApplicationCredentials(Credentials):
@@ -37,15 +35,6 @@ class Registration(ApplicationCredentials):
 class Refresh(Input):
     refresh_token: str = Field(min_length=32, max_length=256)
     hardware_id: str | None = Field(default=None, min_length=16, max_length=256)
-
-
-class ApplicationCreate(Input):
-    name: str = Field(min_length=1, max_length=64)
-
-
-class ApplicationUpdate(Input):
-    name: str = Field(min_length=1, max_length=64)
-    status: Literal['active', 'disabled'] = 'active'
 
 
 class Activation(Input):
@@ -164,18 +153,6 @@ def create_app(settings=None):
     settings = settings or Settings.environment()
     prepare(settings)
     migrate(settings)
-    owner_pw = os.getenv('AUTH_OWNER_PASSWORD')
-    if owner_pw:
-        with connect(settings) as db:
-            user = db.execute('SELECT id FROM users WHERE username=?', (settings.owner_username,)).fetchone()
-            if not user:
-                identifier = uid()
-                db.execute("INSERT INTO users(id,username,password_hash,role,console_only,web_approved,created_at) VALUES(?,?,?,'admin',1,1,?)",
-                           (identifier, settings.owner_username, passwords.hash(owner_pw), now()))
-                audit(db, 'bootstrap.create-admin', 'allowed', target=identifier)
-            else:
-                db.execute('UPDATE users SET password_hash=?,password_until=NULL,web_approved=1,status="active" WHERE id=?',
-                           (passwords.hash(owner_pw), user['id']))
     app = FastAPI(title='Secure Authorization', version='1.0.0', docs_url=None, redoc_url=None)
     app.state.settings = settings
 
@@ -190,8 +167,6 @@ def create_app(settings=None):
 
     @app.exception_handler(Exception)
     async def unexpected_error(request, exc):
-        import traceback
-        traceback.print_exc()
         return JSONResponse({'success': False, 'error': 'server_error'}, status_code=500)
 
     @app.middleware('http')
@@ -247,14 +222,7 @@ def create_app(settings=None):
                        (sid, user['id'], audience, now() + settings.session_seconds,
                         digest(body.hardware_id) if body.hardware_id else None))
             audit(db, 'login', 'allowed', user['id'])
-            res = issue(db, settings, sid)
-            res['user'] = {
-                'username': user['username'],
-                'user_id': user['id'],
-                'is_owner': user['username'] == settings.owner_username,
-                'role': user['role']
-            }
-            return res
+            return issue(db, settings, sid)
 
     @app.post('/v1/register', status_code=201)
     def register(body: Registration, request: Request):
@@ -439,74 +407,11 @@ def create_app(settings=None):
             audit(db, 'admin.users.list', 'allowed', admin['id'])
             return {'success': True, 'users': [{**dict(r), 'is_owner': r['username'] == settings.owner_username} for r in rows]}
 
-    @app.get('/v1/admin/applications')
-    def list_applications(request: Request):
-        with connect(settings) as db:
-            admin = authenticated(db, request, 'admin')
-            db.execute('''CREATE TABLE IF NOT EXISTS applications (
-                id TEXT PRIMARY KEY NOT NULL,
-                name TEXT NOT NULL,
-                status TEXT DEFAULT 'active' NOT NULL,
-                created_at INTEGER NOT NULL
-            )''')
-            db.execute("INSERT OR IGNORE INTO applications(id,name,status,created_at) VALUES('00000000-0000-4000-8000-000000000001','Default application','active',?)", (now(),))
-            rows = db.execute('SELECT * FROM applications ORDER BY created_at, id').fetchall()
-            return {'success': True, 'applications': [dict(r) for r in rows], 'default_application_id': '00000000-0000-4000-8000-000000000001'}
-
-    @app.post('/v1/admin/applications', status_code=201)
-    def create_application(body: ApplicationCreate, request: Request):
-        with connect(settings) as db:
-            admin = authenticated(db, request, 'admin')
-            app_id = uid()
-            db.execute('INSERT INTO applications(id,name,status,created_at) VALUES(?,?,?,?)',
-                       (app_id, body.name, 'active', now()))
-            audit(db, 'admin.application.create', 'allowed', admin['id'], app_id)
-            return {'success': True, 'id': app_id, 'name': body.name, 'status': 'active'}
-
-    @app.put('/v1/admin/applications/{application_id}')
-    def update_application(application_id: str, body: ApplicationUpdate, request: Request):
-        with connect(settings) as db:
-            admin = authenticated(db, request, 'admin')
-            if not db.execute('SELECT 1 FROM applications WHERE id=?', (application_id,)).fetchone():
-                deny('not_found', 404)
-            db.execute('UPDATE applications SET name=?,status=? WHERE id=?', (body.name, body.status, application_id))
-            audit(db, 'admin.application.update', 'allowed', admin['id'], application_id)
-            return {'success': True}
-
-    @app.get('/v1/admin/resellers')
-    def list_resellers(request: Request, offset: int = 0):
-        with connect(settings) as db:
-            admin = authenticated(db, request, 'admin')
-            db.execute('''CREATE TABLE IF NOT EXISTS reseller_profiles (
-                user_id TEXT PRIMARY KEY NOT NULL,
-                max_days INTEGER NOT NULL DEFAULT 30
-            )''')
-            rows = db.execute("SELECT u.id,u.username,u.status,u.created_at,COALESCE(r.max_days, 30) AS max_days FROM users u LEFT JOIN reseller_profiles r ON r.user_id=u.id WHERE u.role='reseller' ORDER BY u.username LIMIT 100 OFFSET ?", (max(0, offset),)).fetchall()
-            return {'success': True, 'resellers': [dict(r) for r in rows]}
-
-    @app.get('/v1/admin/bootstrapper')
-    def get_bootstrapper(request: Request):
-        return {'success': True, 'manifest': {'version': '1.0.0', 'status': 'ready'}}
-
-    @app.post('/v1/admin/bootstrapper')
-    def post_bootstrapper(request: Request):
-        return {'success': True}
-
-    @app.post('/v1/admin/resume')
-    def admin_resume(request: Request):
-        deny('authentication_required', 401)
-
     @app.get('/v1/admin/session')
     def admin_session(request: Request):
         with connect(settings) as db:
             user = authenticated(db, request, 'admin')
-            return {
-                'success': True,
-                'username': user['username'],
-                'user_id': user['id'],
-                'is_owner': user['username'] == settings.owner_username,
-                'role': user['role']
-            }
+            return {'success': True, 'username': user['username'], 'user_id': user['id'], 'is_owner': user['username'] == settings.owner_username}
 
     @app.get('/v1/admin/overview')
     def overview(request: Request):
