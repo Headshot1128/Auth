@@ -38,6 +38,15 @@ class Refresh(Input):
     hardware_id: str | None = Field(default=None, min_length=16, max_length=256)
 
 
+class ApplicationCreate(Input):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class ApplicationUpdate(Input):
+    name: str = Field(min_length=1, max_length=64)
+    status: Literal['active', 'disabled'] = 'active'
+
+
 class Activation(Input):
     key: str = Field(min_length=19, max_length=256)
 
@@ -419,6 +428,49 @@ def create_app(settings=None):
                               (max(0, offset),)).fetchall()
             audit(db, 'admin.users.list', 'allowed', admin['id'])
             return {'success': True, 'users': [{**dict(r), 'is_owner': r['username'] == settings.owner_username} for r in rows]}
+
+    @app.get('/v1/admin/applications')
+    def list_applications(request: Request):
+        with connect(settings) as db:
+            admin = authenticated(db, request, 'admin')
+            db.execute("INSERT OR IGNORE INTO applications(id,name,status,created_at) VALUES('00000000-0000-4000-8000-000000000001','Default application','active',?)", (now(),))
+            rows = db.execute('SELECT * FROM applications ORDER BY created_at, id').fetchall()
+            return {'success': True, 'applications': [dict(r) for r in rows], 'default_application_id': '00000000-0000-4000-8000-000000000001'}
+
+    @app.post('/v1/admin/applications', status_code=201)
+    def create_application(body: ApplicationCreate, request: Request):
+        with connect(settings) as db:
+            admin = authenticated(db, request, 'admin')
+            app_id = uid()
+            db.execute('INSERT INTO applications(id,name,status,created_at) VALUES(?,?,?,?)',
+                       (app_id, body.name, 'active', now()))
+            audit(db, 'admin.application.create', 'allowed', admin['id'], app_id)
+            return {'success': True, 'id': app_id, 'name': body.name, 'status': 'active'}
+
+    @app.put('/v1/admin/applications/{application_id}')
+    def update_application(application_id: str, body: ApplicationUpdate, request: Request):
+        with connect(settings) as db:
+            admin = authenticated(db, request, 'admin')
+            if not db.execute('SELECT 1 FROM applications WHERE id=?', (application_id,)).fetchone():
+                deny('not_found', 404)
+            db.execute('UPDATE applications SET name=?,status=? WHERE id=?', (body.name, body.status, application_id))
+            audit(db, 'admin.application.update', 'allowed', admin['id'], application_id)
+            return {'success': True}
+
+    @app.get('/v1/admin/resellers')
+    def list_resellers(request: Request, offset: int = 0):
+        with connect(settings) as db:
+            admin = authenticated(db, request, 'admin')
+            rows = db.execute("SELECT u.id,u.username,u.status,u.created_at,r.max_days FROM users u JOIN reseller_profiles r ON r.user_id=u.id WHERE u.role='reseller' ORDER BY u.username LIMIT 100 OFFSET ?", (max(0, offset),)).fetchall()
+            return {'success': True, 'resellers': [dict(r) for r in rows]}
+
+    @app.get('/v1/admin/bootstrapper')
+    def get_bootstrapper(request: Request):
+        return {'success': True, 'manifest': {'version': '1.0.0', 'status': 'ready'}}
+
+    @app.post('/v1/admin/bootstrapper')
+    def post_bootstrapper(request: Request):
+        return {'success': True}
 
     @app.get('/v1/admin/session')
     def admin_session(request: Request):
