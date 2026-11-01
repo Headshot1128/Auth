@@ -17,8 +17,11 @@ class Settings:
 
     @classmethod
     def environment(cls):
+        require_https_env = os.getenv('AUTH_REQUIRE_HTTPS')
+        require_https = require_https_env.lower() == 'true' if require_https_env is not None else False
         return cls(database=os.getenv('AUTH_DATABASE', 'data/auth.db'),
                    storage=os.getenv('AUTH_STORAGE', 'data/private'),
+                   require_https=require_https,
                    registration=os.getenv('AUTH_REGISTRATION', 'false') == 'true',
                    license_key_file=os.getenv('AUTH_LICENSE_KEY_FILE'),
                    owner_username=os.getenv('AUTH_OWNER_USERNAME', 'gerry2.0').lower())
